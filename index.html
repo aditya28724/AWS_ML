@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entity Resolution Design</title>
+<style>
+  :root { --bg:#fafaf8; --fg:#1d1d1b; --muted:#5f5e5a; --card:#fff; --line:#e3e2dc; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg:#1b1b1a; --fg:#ecebe6; --muted:#a8a69e; --card:#252523; --line:#3a3936; }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 system-ui, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  h2 { font-size:18px; margin:36px 0 8px; }
+  p.sub { color:var(--muted); margin:0 0 8px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; overflow-x:auto; }
+  .mermaid { text-align:center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Business Entity Resolution: design</h1>
+  <p class="sub">Two stages: candidate blocking, then a gradient-boosted pairwise matcher, followed by precision-first decision logic.</p>
+
+  <h2>1. Class structure (UML)</h2>
+  <div class="card"><pre class="mermaid">
+classDiagram
+  direction LR
+  class Pipeline {
+    +Config cfg
+    +train(train_dir)
+    +predict(test_dir, out_dir)
+  }
+  class DataLoader {
+    +load_sources(dir) dict
+    +load_ground_truth(path) DataFrame
+  }
+  class TextNormalizer {
+    +abbrev_map: dict
+    +normalize_name(s) str
+    +normalize_address(s) str
+    +extract_numbers(s) set
+    +strip_legal_suffix(s) str
+  }
+  class Blocker {
+    <<abstract>>
+    +fit(targets)
+    +query(s1, k) list~Pair~
+  }
+  class TfidfCharBlocker
+  class EmbeddingBlocker {
+    +model: multilingual MiniLM / e5
+  }
+  class TokenIndexBlocker {
+    +rare-token and number index
+  }
+  class CandidateGenerator {
+    +blockers: list~Blocker~
+    +generate(s1, s2, s3) DataFrame
+  }
+  class FeatureBuilder {
+    +build(pairs) DataFrame
+  }
+  class MatchModel {
+    +lgbm: LGBMClassifier
+    +fit(X, y, groups)
+    +predict_proba(X) array
+  }
+  class DecisionResolver {
+    +threshold: float
+    +one_to_one: bool
+    +resolve(pairs, probs) dict
+  }
+  class Evaluator {
+    +macro_f05(pred, truth) float
+    +blocking_recall(cands, truth) float
+    +tune_threshold(oof) float
+  }
+  class SubmissionWriter {
+    +write_matches(path)
+    +write_candidates(path)
+  }
+  Blocker <|-- TfidfCharBlocker
+  Blocker <|-- EmbeddingBlocker
+  Blocker <|-- TokenIndexBlocker
+  CandidateGenerator o-- Blocker
+  Pipeline --> DataLoader
+  Pipeline --> TextNormalizer
+  Pipeline --> CandidateGenerator
+  Pipeline --> FeatureBuilder
+  Pipeline --> MatchModel
+  Pipeline --> DecisionResolver
+  Pipeline --> Evaluator
+  Pipeline --> SubmissionWriter
+  FeatureBuilder ..> TextNormalizer
+  </pre></div>
+
+  <h2>2. End-to-end algorithm</h2>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  A[Load S1, S2, S3 .tsv] --> B[Normalize: lowercase, strip accents,<br/>expand abbreviations, split legal suffix,<br/>extract numbers and postcodes]
+  B --> C{{Blocking: union of candidates}}
+  C --> C1[TF-IDF char 3-5 gram<br/>name + address, top-K]
+  C --> C2[Multilingual embedding<br/>kNN top-K]
+  C --> C3[Shared rare token<br/>or postcode]
+  C1 & C2 & C3 --> D[Candidate pairs S1 x S2/S3<br/>written to candidate_pairs.tsv]
+  D --> E[Pair features: Jaro-Winkler, Levenshtein,<br/>token-set ratio, TF-IDF and embedding cosine,<br/>number overlap, rarity-weighted Jaccard,<br/>blocking rank, missing flags]
+  E --> F{Train or test?}
+  F -- train --> G[Label pairs from ground truth]
+  G --> H[LightGBM, GroupKFold by S1 id]
+  H --> I[Out-of-fold probs: tune threshold<br/>for macro F0.5, check blocking recall]
+  I --> J[(Saved model + threshold)]
+  F -- test --> K[Score pairs with saved model]
+  J -.-> K
+  K --> L[Decision resolver]
+  L --> M[matching_results.tsv<br/>one row per S1, empty if singleton]
+  M --> N[Run validate_submission.py]
+  </pre></div>
+
+  <h2>3. Decision logic (precision-first)</h2>
+  <div class="card"><pre class="mermaid">
+flowchart TD
+  S[Scored pairs] --> T[Each S2/S3 record keeps only its<br/>best-scoring S1: S1 is deduplicated,<br/>so one record maps to one entity]
+  T --> U{"p ≥ threshold?"}
+  U -- no --> X[Drop pair]
+  U -- yes --> V{"p ≥ best p for this S1 − margin?"}
+  V -- no --> X
+  V -- yes --> W[Keep match]
+  W --> Y[Group matches by S1]
+  X --> Y
+  Y --> Z{Any matches?}
+  Z -- yes --> Z1[Write ID list]
+  Z -- no --> Z2[Write empty list: singleton scores 1.0]
+  </pre></div>
+</main>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "neutral", securityLevel: "strict" });
+</script>
+</body>
+</html>
+

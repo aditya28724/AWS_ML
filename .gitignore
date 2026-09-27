@@ -1,0 +1,21 @@
+# Data (provided by organizers, not committed)
+dataset/
+student_resource/
+
+# Generated
+artifacts/
+output/*.tsv
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
